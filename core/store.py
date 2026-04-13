@@ -29,12 +29,14 @@ def save(chunks: list[Chunk], vectors: list[list[float]], data_dir: Path | None 
 
     chunks_path = d / "chunks.json"
     vectors_path = d / "vectors.npy"
+    meta_path = d / "meta.json"
 
     chunks_path.write_text(
         json.dumps([c.to_dict() for c in chunks], indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
     np.save(str(vectors_path), np.array(vectors, dtype=np.float32))
+    meta_path.write_text(json.dumps({"count": len(chunks)}), encoding="utf-8")
 
 
 def load(data_dir: Path | None = None) -> tuple[list[Chunk], np.ndarray]:
@@ -53,8 +55,12 @@ def load(data_dir: Path | None = None) -> tuple[list[Chunk], np.ndarray]:
 
 
 def count(data_dir: Path | None = None) -> int:
-    """Return number of stored chunks."""
+    """Return number of stored chunks (fast — reads meta.json, not the full store)."""
     d = Path(data_dir) if data_dir else DATA_DIR
+    meta_path = d / "meta.json"
+    if meta_path.exists():
+        return json.loads(meta_path.read_text(encoding="utf-8")).get("count", 0)
+    # Fallback: count from chunks.json
     chunks_path = d / "chunks.json"
     if not chunks_path.exists():
         return 0
@@ -65,6 +71,6 @@ def count(data_dir: Path | None = None) -> int:
 def clear(data_dir: Path | None = None) -> None:
     """Delete all stored chunks and vectors."""
     d = Path(data_dir) if data_dir else DATA_DIR
-    for f in [d / "chunks.json", d / "vectors.npy"]:
+    for f in [d / "chunks.json", d / "vectors.npy", d / "meta.json"]:
         if f.exists():
             f.unlink()

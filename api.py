@@ -100,6 +100,15 @@ def health():
     )
 
 
+@app.get("/sources")
+def sources():
+    """Return the list of unique source files in the vector store."""
+    chunks, _ = store.load()
+    from pathlib import Path
+    files = sorted({Path(c.source).name for c in chunks})
+    return {"sources": files, "total_chunks": len(chunks)}
+
+
 @app.post("/query", response_model=QueryResponse)
 def query(req: QueryRequest):
     t0 = time.time()

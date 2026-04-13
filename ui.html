@@ -157,22 +157,165 @@
       font-size: 0.9rem;
     }
 
+    .examples {
+      width: 100%;
+      max-width: 720px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 28px;
+    }
+
+    .examples-label {
+      font-size: 0.78rem;
+      color: #475569;
+      white-space: nowrap;
+    }
+
+    .example-btn {
+      padding: 6px 12px;
+      background: transparent;
+      border: 1px solid #2d3148;
+      border-radius: 20px;
+      color: #94a3b8;
+      font-size: 0.78rem;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .example-btn:hover {
+      border-color: #6366f1;
+      color: #e2e8f0;
+      background: transparent;
+    }
+
+    .sources-panel {
+      width: 100%;
+      max-width: 720px;
+      margin-bottom: 28px;
+      background: #1e2130;
+      border: 1px solid #2d3148;
+      border-radius: 10px;
+      padding: 16px 20px;
+    }
+
+    .sources-panel-label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #475569;
+      margin-bottom: 12px;
+    }
+
+    .sources-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .source-tag {
+      padding: 5px 11px;
+      background: #0f1117;
+      border: 1px solid #2d3148;
+      border-radius: 16px;
+      color: #94a3b8;
+      font-size: 0.78rem;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .source-tag:hover {
+      border-color: #6366f1;
+      color: #e2e8f0;
+    }
+
     .elapsed {
       font-size: 0.78rem;
       color: #475569;
       margin-top: 12px;
       text-align: right;
     }
+
+    .progress-wrap {
+      width: 100%;
+      max-width: 720px;
+      display: none;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 24px;
+    }
+
+    .progress-bar-bg {
+      width: 100%;
+      height: 4px;
+      background: #1e2130;
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      width: 0%;
+      background: #6366f1;
+      border-radius: 2px;
+      transition: width 0.4s ease;
+    }
+
+    .progress-steps {
+      display: flex;
+      gap: 16px;
+      font-size: 0.78rem;
+    }
+
+    .step {
+      color: #374151;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .step.active { color: #6366f1; }
+    .step.done { color: #22c55e; }
+
+    .step-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    .step.active .step-dot { animation: pulse 1s infinite; }
   </style>
 </head>
 <body>
 
   <h1>RAG Pipeline</h1>
-  <p class="subtitle">Ask a question. Get an answer from your documents.</p>
+  <p class="subtitle">Ask a specific question. The AI searches your ingested documents and answers from them.</p>
 
   <div class="search-box">
-    <input type="text" id="question" placeholder="What is the bond system?" autofocus />
+    <input type="text" id="question" placeholder="e.g. How does the chunker split documents?" autofocus />
     <button id="askBtn" onclick="ask()">Ask</button>
+  </div>
+
+  <div class="sources-panel" id="sourcesPanel" style="display:none">
+    <div class="sources-panel-label">Ingested documents — ask about any of these:</div>
+    <div class="sources-list" id="sourcesList"></div>
+  </div>
+
+  <div class="progress-wrap" id="progressWrap">
+    <div class="progress-bar-bg"><div class="progress-bar-fill" id="progressFill"></div></div>
+    <div class="progress-steps">
+      <div class="step" id="step1"><div class="step-dot"></div>Embedding query</div>
+      <div class="step" id="step2"><div class="step-dot"></div>Searching chunks</div>
+      <div class="step" id="step3"><div class="step-dot"></div>Generating answer</div>
+    </div>
   </div>
 
   <div class="status" id="status"></div>
@@ -188,9 +331,45 @@
   <script>
     const API = "http://localhost:8000";
 
+    function setQ(text) {
+      document.getElementById("question").value = text;
+      document.getElementById("question").focus();
+    }
+
+    async function loadSources() {
+      try {
+        const res = await fetch(`${API}/sources`);
+        const data = await res.json();
+        const panel = document.getElementById("sourcesPanel");
+        const list = document.getElementById("sourcesList");
+        if (data.sources && data.sources.length > 0) {
+          list.innerHTML = "";
+          for (const name of data.sources) {
+            const tag = document.createElement("span");
+            tag.className = "source-tag";
+            tag.textContent = name;
+            tag.onclick = () => setQ(`What does ${name} do?`);
+            list.appendChild(tag);
+          }
+          panel.style.display = "block";
+        }
+      } catch (e) {}
+    }
+
+    window.addEventListener("load", loadSources);
+
     document.getElementById("question").addEventListener("keydown", e => {
       if (e.key === "Enter") ask();
     });
+
+    function setStep(n) {
+      const fills = [0, 20, 55, 90];
+      document.getElementById("progressFill").style.width = fills[n] + "%";
+      for (let i = 1; i <= 3; i++) {
+        const el = document.getElementById("step" + i);
+        el.className = "step" + (i < n ? " done" : i === n ? " active" : "");
+      }
+    }
 
     async function ask() {
       const q = document.getElementById("question").value.trim();
@@ -200,11 +379,17 @@
       const status = document.getElementById("status");
       const errorBox = document.getElementById("error");
       const answerBox = document.getElementById("answerBox");
+      const progressWrap = document.getElementById("progressWrap");
 
       btn.disabled = true;
-      status.textContent = "Searching documents...";
       errorBox.style.display = "none";
       answerBox.style.display = "none";
+      progressWrap.style.display = "flex";
+      setStep(1);
+
+      // Fake step progression while waiting (actual steps happen server-side)
+      const t1 = setTimeout(() => setStep(2), 800);
+      const t2 = setTimeout(() => setStep(3), 2000);
 
       try {
         const res = await fetch(`${API}/query`, {
@@ -239,12 +424,17 @@
           sourcesEl.appendChild(div);
         }
 
+        clearTimeout(t1); clearTimeout(t2);
+        document.getElementById("progressFill").style.width = "100%";
+        setStep(4);
+        setTimeout(() => { progressWrap.style.display = "none"; }, 600);
+
         answerBox.style.display = "block";
-        status.textContent = "";
       } catch (err) {
+        clearTimeout(t1); clearTimeout(t2);
+        progressWrap.style.display = "none";
         errorBox.textContent = err.message;
         errorBox.style.display = "block";
-        status.textContent = "";
       } finally {
         btn.disabled = false;
       }

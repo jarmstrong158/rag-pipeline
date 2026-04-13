@@ -41,11 +41,8 @@ def is_available(model: str = MODEL_PATH) -> bool:
     """Return True if the GGUF file exists and llama-cpp-python is installed."""
     if not Path(MODEL_PATH).exists():
         return False
-    try:
-        import llama_cpp  # noqa
-        return True
-    except ImportError:
-        return False
+    from importlib.util import find_spec
+    return find_spec("llama_cpp") is not None
 
 
 def require_available(model: str = MODEL_PATH) -> None:
