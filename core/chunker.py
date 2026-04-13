@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-SUPPORTED = {".txt", ".md", ".py", ".js", ".json", ".yaml", ".yml", ".toml", ".rst"}
+SUPPORTED = {".txt", ".md", ".py", ".js", ".json", ".yaml", ".yml", ".toml", ".rst", ".docx"}
 
 
 @dataclass
@@ -95,6 +95,8 @@ def chunk_file(
 
     if suffix == ".pdf":
         text = _extract_pdf(path)
+    elif suffix == ".docx":
+        text = _extract_docx(path)
     elif suffix in SUPPORTED:
         text = path.read_text(encoding="utf-8", errors="ignore")
     else:
@@ -115,11 +117,18 @@ def chunk_directory(
     all_chunks = []
 
     for path in sorted(directory.glob(glob)):
-        if path.is_file() and path.suffix.lower() in SUPPORTED:
+        if path.is_file() and path.suffix.lower() in SUPPORTED | {".pdf", ".docx"}:
             chunks = chunk_file(path, chunk_size=chunk_size, overlap=overlap)
             all_chunks.extend(chunks)
 
     return all_chunks
+
+
+def _extract_docx(path: Path) -> str:
+    """Extract text from a .docx file using python-docx."""
+    import docx
+    doc = docx.Document(str(path))
+    return "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
 
 
 def _extract_pdf(path: Path) -> str:

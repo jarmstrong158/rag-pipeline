@@ -238,6 +238,43 @@
       text-align: right;
     }
 
+    .ingest-section {
+      width: 100%;
+      max-width: 720px;
+      margin-bottom: 40px;
+      border-top: 1px solid #1e2130;
+      padding-top: 28px;
+    }
+
+    .ingest-label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #475569;
+      margin-bottom: 10px;
+    }
+
+    .ingest-hint {
+      font-size: 0.8rem;
+      color: #374151;
+      margin-bottom: 12px;
+    }
+
+    .ingest-box {
+      display: flex;
+      gap: 10px;
+    }
+
+    .ingest-result {
+      margin-top: 10px;
+      font-size: 0.82rem;
+      color: #22c55e;
+      display: none;
+    }
+
+    .ingest-result.error { color: #f87171; }
+
     .progress-wrap {
       width: 100%;
       max-width: 720px;
@@ -309,6 +346,16 @@
     <div class="sources-list" id="sourcesList"></div>
   </div>
 
+  <div class="ingest-section">
+    <div class="ingest-label">Add Documents</div>
+    <div class="ingest-hint">Paste a file or folder path — everything in it will be indexed and searchable.</div>
+    <div class="ingest-box">
+      <input type="text" id="ingestPath" placeholder="e.g. C:\Users\you\docs or C:\project\README.md" />
+      <button id="ingestBtn" onclick="ingest()">Ingest</button>
+    </div>
+    <div class="ingest-result" id="ingestResult"></div>
+  </div>
+
   <div class="progress-wrap" id="progressWrap">
     <div class="progress-bar-bg"><div class="progress-bar-fill" id="progressFill"></div></div>
     <div class="progress-steps">
@@ -356,11 +403,55 @@
       } catch (e) {}
     }
 
-    window.addEventListener("load", loadSources);
+    window.addEventListener("load", () => {
+      loadSources();
+      // Auto-submit if ?q= param is present (e.g. launched from MCP)
+      const params = new URLSearchParams(window.location.search);
+      const q = params.get("q");
+      if (q) {
+        document.getElementById("question").value = q;
+        // Small delay so the page finishes rendering first
+        setTimeout(ask, 300);
+      }
+    });
 
     document.getElementById("question").addEventListener("keydown", e => {
       if (e.key === "Enter") ask();
     });
+
+    document.getElementById("ingestPath").addEventListener("keydown", e => {
+      if (e.key === "Enter") ingest();
+    });
+
+    async function ingest() {
+      const path = document.getElementById("ingestPath").value.trim();
+      if (!path) return;
+
+      const btn = document.getElementById("ingestBtn");
+      const result = document.getElementById("ingestResult");
+
+      btn.disabled = true;
+      result.className = "ingest-result";
+      result.textContent = "Ingesting...";
+      result.style.display = "block";
+
+      try {
+        const res = await fetch(`${API}/ingest`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        result.textContent = `Done — ${data.chunks_added} chunks added from ${data.files_processed} file(s). Total: ${data.total_chunks} chunks.`;
+        loadSources();
+      } catch (err) {
+        result.className = "ingest-result error";
+        result.textContent = err.message;
+      } finally {
+        btn.disabled = false;
+      }
+    }
 
     function setStep(n) {
       const fills = [0, 20, 55, 90];

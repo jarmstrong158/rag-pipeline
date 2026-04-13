@@ -16,6 +16,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 from typing import Optional
@@ -192,7 +193,7 @@ def ingest(req: IngestRequest):
     if not embedder.is_available():
         raise HTTPException(503, "Embedder (Ollama nomic-embed-text) is not available.")
 
-    path = Path(req.path)
+    path = Path(req.path.strip().strip('"\''))
     if not path.exists():
         raise HTTPException(404, f"Path does not exist: {req.path}")
 
@@ -230,6 +231,13 @@ def ingest(req: IngestRequest):
     )
 
 
+@app.post("/clear")
+def clear():
+    """Wipe the entire vector store."""
+    store.clear()
+    return {"success": True, "message": "Vector store cleared."}
+
+
 # ── UI ────────────────────────────────────────────────────────────────────────
 
 @app.get("/")
@@ -242,11 +250,12 @@ def serve_ui():
 # ── Dev server ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    import webbrowser, threading, uvicorn
+    import uvicorn, webbrowser, threading
 
-    def open_browser():
-        import time as _t; _t.sleep(1)
-        webbrowser.open("http://localhost:8000")
+    if not os.environ.get("RAG_NO_BROWSER"):
+        def open_browser():
+            import time as _t; _t.sleep(1)
+            webbrowser.open("http://localhost:8000")
+        threading.Thread(target=open_browser, daemon=True).start()
 
-    threading.Thread(target=open_browser, daemon=True).start()
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=False)

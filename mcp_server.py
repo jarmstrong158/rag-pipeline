@@ -2,18 +2,31 @@
 """
 RAG Pipeline MCP Server
 
+Thin HTTP client over api.py. Starts the API server automatically and opens
+the browser so the user can see live progress. All logic lives in api.py —
+this file only routes MCP tool calls to REST endpoints.
+
 Tools:
   rag_query    — ask a question, get an answer from your ingested documents
   rag_ingest   — ingest a file or directory into the vector store
-  rag_status   — how many chunks are stored, is the model loaded
+  rag_status   — how many chunks are stored, are the models ready
   rag_clear    — wipe the vector store
 """
 
 import json
 import os
 import sys
+import time
+import subprocess
+import urllib.request
+import urllib.error
+import webbrowser
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+API_BASE = "http://localhost:8000"
+API_PY   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "api.py")
+
+_browser_opened = False
+
 
 TOOLS = [
     {
@@ -61,135 +74,103 @@ TOOLS = [
 ]
 
 
-# ── Handlers ──────────────────────────────────────────────────────────────────
+# ── HTTP helpers ──────────────────────────────────────────────────────────────
 
-def _ensure_ui():
-    """Start the API server if not running, then open the browser."""
-    import subprocess, webbrowser, time, urllib.request
+def _is_api_running() -> bool:
     try:
-        urllib.request.urlopen("http://localhost:8000/health", timeout=2)
+        urllib.request.urlopen(f"{API_BASE}/health", timeout=2)
+        return True
     except Exception:
+        return False
+
+
+def _ensure_api():
+    """Start api.py if not already running, then open browser on first call."""
+    global _browser_opened
+
+    if not _is_api_running():
+        env = os.environ.copy()
+        env["RAG_NO_BROWSER"] = "1"
         subprocess.Popen(
-            [sys.executable, os.path.join(os.path.dirname(__file__), "api.py")],
+            [sys.executable, API_PY],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=env,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
-        time.sleep(3)
-    webbrowser.open("http://localhost:8000")
+
+        # Wait up to 30 s for the server to come up
+        for _ in range(30):
+            time.sleep(1)
+            if _is_api_running():
+                break
+
+    if not _browser_opened:
+        webbrowser.open(API_BASE)
+        _browser_opened = True
 
 
-def handle_rag_query(params):
-    _ensure_ui()
-    from core import embedder, store, retriever, generator
+def _api(method: str, path: str, body: dict | None = None) -> dict:
+    _ensure_api()
+    url = f"{API_BASE}{path}"
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={"Content-Type": "application/json"} if data else {},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode()
+        try:
+            detail = json.loads(body_text).get("detail", body_text)
+        except Exception:
+            detail = body_text
+        return {"error": f"HTTP {e.code}: {detail}"}
+    except Exception as e:
+        return {"error": str(e)}
 
-    question = params.get("question", "").strip()
+
+# ── Handlers ──────────────────────────────────────────────────────────────────
+
+def handle_rag_query(args: dict) -> dict:
+    question = args.get("question", "").strip()
     if not question:
         return {"error": "question is required"}
-
-    top_k = int(params.get("top_k", 5))
-
-    chunks, vectors = store.load()
-    if not chunks:
-        return {"error": "Vector store is empty. Run rag_ingest first."}
-
-    if not embedder.is_available():
-        return {"error": "Embedding model not available. Check the GGUF file path."}
-
-    query_vector = embedder.embed(question)
-    results = retriever.retrieve(query_vector, chunks, vectors, top_k=top_k)
-
-    if not results:
-        return {"error": "No relevant documents found for that question."}
-
-    if not generator.is_available():
-        lines = [f"Generator not available. Top {len(results)} relevant chunks:\n"]
-        for i, (chunk, score) in enumerate(results, 1):
-            fname = os.path.basename(chunk.source)
-            lines.append(f"[{i}] {fname} (score: {score:.3f})\n{chunk.text[:300]}\n")
-        return {"answer": "\n".join(lines), "sources": []}
-
-    answer = generator.generate(question, results)
-    sources = [
-        {
-            "file": os.path.basename(chunk.source),
-            "score": round(score, 4),
-            "chunk_index": chunk.chunk_index,
-        }
-        for chunk, score in results
-    ]
-    return {"answer": answer, "sources": sources}
+    _ensure_api()
+    import urllib.parse
+    url = f"{API_BASE}/?q={urllib.parse.quote(question)}"
+    webbrowser.open(url)
+    return {"status": "Query submitted to UI", "question": question, "url": url}
 
 
-def handle_rag_ingest(params):
-    import numpy as np
-    from pathlib import Path
-    from core import chunker, embedder, store
-
-    path = params.get("path", "").strip()
+def handle_rag_ingest(args: dict) -> dict:
+    path = args.get("path", "").strip()
     if not path:
         return {"error": "path is required"}
-
-    p = Path(path)
-    if not p.exists():
-        return {"error": f"Path does not exist: {path}"}
-
-    if not embedder.is_available():
-        return {"error": "Embedding model not available. Check the GGUF file path."}
-
-    chunk_size = int(params.get("chunk_size", 500))
-    overlap = int(params.get("overlap", 100))
-
-    if p.is_dir():
-        chunks = chunker.chunk_directory(p, chunk_size=chunk_size, overlap=overlap)
-    else:
-        chunks = chunker.chunk_file(p, chunk_size=chunk_size, overlap=overlap)
-
-    if not chunks:
-        return {"error": "No supported files found or all files were empty."}
-
-    texts = [c.text for c in chunks]
-    vectors = embedder.embed_batch(texts)
-
-    existing_chunks, existing_vectors = store.load()
-    all_chunks = existing_chunks + chunks
-    if existing_vectors.size > 0:
-        all_vectors = existing_vectors.tolist() + vectors
-    else:
-        all_vectors = vectors
-
-    store.save(all_chunks, all_vectors)
-    total = store.count()
-    files = len({c.source for c in chunks})
-
-    return {
-        "success": True,
-        "files_ingested": files,
-        "chunks_added": len(chunks),
-        "total_chunks": total,
-    }
+    return _api("POST", "/ingest", {
+        "path": path,
+        "chunk_size": int(args.get("chunk_size", 500)),
+        "overlap": int(args.get("overlap", 100)),
+    })
 
 
-def handle_rag_status(params):
-    from core import embedder, generator, store
-
-    return {
-        "chunks_in_store": store.count(),
-        "embedder_ready": embedder.is_available(),
-        "generator_ready": generator.is_available(),
-    }
+def handle_rag_status(_args: dict) -> dict:
+    return _api("GET", "/health")
 
 
-def handle_rag_clear(params):
-    from core import store
-    store.clear()
-    return {"success": True, "message": "Vector store cleared."}
+def handle_rag_clear(_args: dict) -> dict:
+    return _api("POST", "/clear")
 
 
 HANDLERS = {
-    "rag_query": handle_rag_query,
+    "rag_query":  handle_rag_query,
     "rag_ingest": handle_rag_ingest,
     "rag_status": handle_rag_status,
-    "rag_clear": handle_rag_clear,
+    "rag_clear":  handle_rag_clear,
 }
 
 
@@ -219,42 +200,45 @@ def main():
                     "serverInfo": {"name": "rag-pipeline", "version": "1.0.0"},
                 },
             }
+
         elif method == "notifications/initialized":
             continue
+
         elif method == "tools/list":
             response = {
                 "jsonrpc": "2.0",
                 "id": msg_id,
                 "result": {"tools": TOOLS},
             }
+
         elif method == "tools/call":
             tool_name = params.get("name", "")
             tool_args = params.get("arguments", {})
             handler = HANDLERS.get(tool_name)
 
             if handler is None:
-                response = {
-                    "jsonrpc": "2.0",
-                    "id": msg_id,
-                    "result": {
-                        "content": [{"type": "text", "text": json.dumps({"error": f"Unknown tool: {tool_name}"})}],
-                        "isError": True,
-                    },
-                }
+                result = {"error": f"Unknown tool: {tool_name}"}
+                is_error = True
             else:
                 try:
                     result = handler(tool_args)
+                    is_error = "error" in result
                 except Exception as e:
                     result = {"error": f"Tool '{tool_name}' failed: {e}"}
-                response = {
-                    "jsonrpc": "2.0",
-                    "id": msg_id,
-                    "result": {
-                        "content": [{"type": "text", "text": json.dumps(result, indent=2)}],
-                    },
-                }
+                    is_error = True
+
+            response = {
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps(result, indent=2)}],
+                    "isError": is_error,
+                },
+            }
+
         elif method.startswith("notifications/"):
             continue
+
         else:
             response = {
                 "jsonrpc": "2.0",
