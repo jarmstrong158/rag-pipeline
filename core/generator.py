@@ -1,20 +1,20 @@
 """
-Generator — send retrieved chunks + query to Ollama (llama3.2) and return an answer.
+Generator — send retrieved chunks + query to llama3.2 GGUF and return an answer.
 
-Requires Ollama running at localhost:11434 with llama3.2 pulled.
-  ollama pull llama3.2
+No Ollama required. Uses the GGUF file directly via llama-cpp-python.
+
+  pip install llama-cpp-python
 """
 
 from __future__ import annotations
 
-import json
-import urllib.request
+from pathlib import Path
 
 from core.chunker import Chunk
 
 
-OLLAMA_URL = "http://localhost:11434"
-DEFAULT_MODEL = "llama3.2"
+MODEL_PATH = r"C:\Users\jarms\repos\ollama\Llama-3.2-3B-Instruct-Q4_K_M.gguf"
+DEFAULT_MODEL = MODEL_PATH
 
 SYSTEM_PROMPT = """\
 You are a helpful assistant that answers questions based on the provided context documents.
@@ -22,6 +22,21 @@ Only use the information in the context to answer. If the context doesn't contai
 information to answer the question, say so clearly.
 Do not make up facts. Be concise and direct.\
 """
+
+_model = None
+
+
+def _get_model(model_path: str = MODEL_PATH):
+    global _model
+    if _model is None:
+        from llama_cpp import Llama
+        _model = Llama(
+            model_path=model_path,
+            n_ctx=4096,
+            n_batch=512,
+            verbose=False,
+        )
+    return _model
 
 
 def build_prompt(query: str, chunks: list[tuple[Chunk, float]]) -> str:
@@ -31,7 +46,6 @@ def build_prompt(query: str, chunks: list[tuple[Chunk, float]]) -> str:
         context_parts.append(
             f"[Source {i}: {chunk.source} (relevance: {score:.2f})]\n{chunk.text}"
         )
-
     context = "\n\n---\n\n".join(context_parts)
     return f"Context:\n{context}\n\nQuestion: {query}"
 
@@ -49,87 +63,66 @@ def generate(
     Args:
         query: The user's question.
         chunks: List of (Chunk, score) from the retriever.
-        model: Ollama model to use.
+        model: Path to GGUF model file (default: llama3.2 Q4_K_M).
         temperature: Lower = more factual. Default 0.1 for RAG.
         stream: If True, print tokens as they stream. Returns full response.
 
     Returns:
         The model's answer as a string.
     """
+    m = _get_model(model)
     prompt = build_prompt(query, chunks)
 
-    payload = json.dumps({
-        "model": model,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-        "options": {"temperature": temperature},
-        "stream": stream,
-    }).encode()
-
-    req = urllib.request.Request(
-        f"{OLLAMA_URL}/api/chat",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
+    ]
 
     if stream:
-        return _stream_response(req)
+        response = m.create_chat_completion(
+            messages=messages,
+            temperature=temperature,
+            stream=True,
+        )
+        full_response = []
+        for chunk in response:
+            token = chunk["choices"][0]["delta"].get("content", "")
+            if token:
+                print(token, end="", flush=True)
+                full_response.append(token)
+        print()
+        return "".join(full_response).strip()
     else:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            data = json.loads(resp.read())
-        return data["message"]["content"].strip()
+        response = m.create_chat_completion(
+            messages=messages,
+            temperature=temperature,
+            stream=False,
+        )
+        return response["choices"][0]["message"]["content"].strip()
 
 
-def _stream_response(req: urllib.request.Request) -> str:
-    """Stream tokens to stdout and return the full assembled response."""
-    full_response = []
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        for line in resp:
-            if not line.strip():
-                continue
-            try:
-                chunk_data = json.loads(line)
-                token = chunk_data.get("message", {}).get("content", "")
-                if token:
-                    print(token, end="", flush=True)
-                    full_response.append(token)
-                if chunk_data.get("done"):
-                    break
-            except json.JSONDecodeError:
-                continue
-    print()  # newline after streaming
-    return "".join(full_response).strip()
-
-
-def is_available(model: str = DEFAULT_MODEL) -> bool:
-    """Return True if Ollama is running and the model is available."""
+def is_available(model: str = MODEL_PATH) -> bool:
+    """Return True if the GGUF file exists and llama-cpp-python is installed."""
+    if not Path(model).exists():
+        return False
     try:
-        req = urllib.request.Request(f"{OLLAMA_URL}/api/tags", method="GET")
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            data = json.loads(resp.read())
-        models = [m["name"].split(":")[0] for m in data.get("models", [])]
-        return model.split(":")[0] in models
-    except Exception:
+        import llama_cpp  # noqa
+        return True
+    except ImportError:
         return False
 
 
-def require_available(model: str = DEFAULT_MODEL) -> None:
-    """Raise a clear error if Ollama or the model isn't ready."""
-    try:
-        req = urllib.request.Request(f"{OLLAMA_URL}/api/tags", method="GET")
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            data = json.loads(resp.read())
-    except Exception:
+def require_available(model: str = MODEL_PATH) -> None:
+    """Raise a clear error if the model or library isn't ready."""
+    if not Path(model).exists():
         raise RuntimeError(
-            "Ollama is not running. Start it with: ollama serve\n"
-            f"Then pull the model: ollama pull {model}"
+            f"Generator model not found at: {model}\n"
+            "Download it from: https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF"
         )
-    models = [m["name"].split(":")[0] for m in data.get("models", [])]
-    if model.split(":")[0] not in models:
+    try:
+        import llama_cpp  # noqa
+    except ImportError:
         raise RuntimeError(
-            f"Model '{model}' not found in Ollama.\n"
-            f"Pull it with: ollama pull {model}"
+            "llama-cpp-python is not installed.\n"
+            "Install it with: pip install llama-cpp-python"
         )

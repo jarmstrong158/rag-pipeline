@@ -221,8 +221,23 @@ def ingest(req: IngestRequest):
     )
 
 
+# ── UI ────────────────────────────────────────────────────────────────────────
+
+@app.get("/")
+def serve_ui():
+    from fastapi.responses import FileResponse
+    ui = Path(__file__).parent / "ui.html"
+    return FileResponse(ui)
+
+
 # ── Dev server ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
+    import webbrowser, threading, uvicorn
+
+    def open_browser():
+        import time as _t; _t.sleep(1)
+        webbrowser.open("http://localhost:8000")
+
+    threading.Thread(target=open_browser, daemon=True).start()
+    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=False)

@@ -1,74 +1,86 @@
 """
-Embedder — convert text to vectors via Ollama (nomic-embed-text).
+Embedder — convert text to vectors via llama-cpp-python (nomic-embed-text GGUF).
 
-Requires Ollama running at localhost:11434 with nomic-embed-text pulled.
-  ollama pull nomic-embed-text
+No Ollama required. Uses the GGUF file directly.
+
+  pip install llama-cpp-python
 """
 
 from __future__ import annotations
 
-import json
-import urllib.request
+from pathlib import Path
+
+MODEL_PATH = r"C:\Users\jarms\repos\ollama\nomic-embed-text-v1.5.Q4_K_M.gguf"
+
+_model = None
 
 
-OLLAMA_URL = "http://localhost:11434"
-DEFAULT_MODEL = "nomic-embed-text"
+def _get_model():
+    global _model
+    if _model is None:
+        import os, sys
+        from llama_cpp import Llama
+        # Suppress llama.cpp stderr noise
+        devnull = open(os.devnull, 'w')
+        old_stderr = sys.stderr
+        sys.stderr = devnull
+        try:
+            _model = Llama(
+                model_path=MODEL_PATH,
+                embedding=True,
+                n_ctx=2048,
+                n_batch=512,
+                verbose=False,
+            )
+        finally:
+            sys.stderr = old_stderr
+    return _model
 
 
-def is_available(model: str = DEFAULT_MODEL) -> bool:
-    """Return True if Ollama is running and the model is available."""
+def is_available(model: str = MODEL_PATH) -> bool:
+    """Return True if the GGUF file exists and llama-cpp-python is installed."""
+    if not Path(MODEL_PATH).exists():
+        return False
     try:
-        req = urllib.request.Request(f"{OLLAMA_URL}/api/tags", method="GET")
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            data = json.loads(resp.read())
-        models = [m["name"].split(":")[0] for m in data.get("models", [])]
-        return model.split(":")[0] in models
-    except Exception:
+        import llama_cpp  # noqa
+        return True
+    except ImportError:
         return False
 
 
-def require_available(model: str = DEFAULT_MODEL) -> None:
-    """Raise a clear error if Ollama or the model isn't ready."""
+def require_available(model: str = MODEL_PATH) -> None:
+    """Raise a clear error if the model or library isn't ready."""
+    if not Path(MODEL_PATH).exists():
+        raise RuntimeError(
+            f"Embedding model not found at: {MODEL_PATH}\n"
+            "Download it from: https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF"
+        )
     try:
-        req = urllib.request.Request(f"{OLLAMA_URL}/api/tags", method="GET")
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            data = json.loads(resp.read())
-    except Exception:
+        import llama_cpp  # noqa
+    except ImportError:
         raise RuntimeError(
-            "Ollama is not running. Start it with: ollama serve\n"
-            f"Then pull the model: ollama pull {model}"
-        )
-    models = [m["name"].split(":")[0] for m in data.get("models", [])]
-    if model.split(":")[0] not in models:
-        raise RuntimeError(
-            f"Model '{model}' not found in Ollama.\n"
-            f"Pull it with: ollama pull {model}"
+            "llama-cpp-python is not installed.\n"
+            "Install it with: pip install llama-cpp-python"
         )
 
 
-def embed(text: str, model: str = DEFAULT_MODEL) -> list[float]:
+def embed(text: str, model: str = MODEL_PATH) -> list[float]:
     """Embed a single string. Returns a float vector."""
-    payload = json.dumps({"model": model, "input": text}).encode()
-    req = urllib.request.Request(
-        f"{OLLAMA_URL}/api/embed",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        data = json.loads(resp.read())
-    return data["embeddings"][0]
+    m = _get_model()
+    result = m.embed(text)
+    # llama-cpp-python returns list[float] or list[list[float]]
+    if isinstance(result[0], list):
+        return result[0]
+    return result
 
 
-def embed_batch(texts: list[str], model: str = DEFAULT_MODEL) -> list[list[float]]:
+def embed_batch(texts: list[str], model: str = MODEL_PATH) -> list[list[float]]:
     """Embed a list of strings. Returns a list of float vectors."""
-    payload = json.dumps({"model": model, "input": texts}).encode()
-    req = urllib.request.Request(
-        f"{OLLAMA_URL}/api/embed",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        data = json.loads(resp.read())
-    return data["embeddings"]
+    results = []
+    total = len(texts)
+    for i, text in enumerate(texts, 1):
+        print(f"\r  Embedding {i}/{total}...", end="", flush=True)
+        vec = embed(text)
+        results.append(vec)
+    print()
+    return results
